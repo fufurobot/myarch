@@ -229,3 +229,4 @@ Dockerfile
 .venv/
 
 .secrets.env
+.scratch/
