@@ -532,3 +532,41 @@ class TestEntrypointCoverage:
 
         proc = subprocess.run(["bash", "-n", "entrypoint.sh"], capture_output=True, text=True)
         assert proc.returncode == 0, proc.stderr
+
+
+class TestBuildTimeOrdering:
+    """Regressions found by actually running `docker build` in CI.
+
+    A forced password change makes an account unusable for non-interactive
+    privilege drops, and single-quoted shell strings silently swallow build
+    args. Both only surface when the image is really built, so they are pinned
+    here as template invariants.
+    """
+
+    def test_password_expiry_happens_after_the_pikaur_build(self, base_render):
+        """`chage -d 0` must not run before pikaur-manager is used."""
+        build_at = base_render.index("makepkg -fs")
+        expire_at = base_render.index("chage -d 0 pikaur-manager")
+        assert expire_at > build_at, (
+            "expiring pikaur-manager's password before the makepkg build makes "
+            "the privilege drop prompt interactively and fail"
+        )
+
+    def test_privilege_drop_avoids_interactive_pam(self, base_render):
+        """su consults PAM and can prompt; runuser does not."""
+        assert "runuser -u pikaur-manager" in base_render
+        # Only real commands count; explanatory comments are stripped first.
+        code = "\n".join(
+            line for line in base_render.splitlines() if not line.lstrip().startswith("#")
+        )
+        assert "su - pikaur-manager" not in code
+
+    @pytest.mark.parametrize("username", sorted(USER_PASSWORDS))
+    def test_all_users_still_forced_to_change_password(self, base_render, username):
+        """The ordering fix must not have dropped the requirement itself."""
+        assert re.search(r"chage\s+-d\s+0\s+%s\b" % re.escape(username), base_render)
+
+    def test_build_args_are_actually_expanded(self, base_render):
+        """A single-quoted reference would store the literal string instead."""
+        assert "'${ADMIN_MASTER_PASSWORD}'" not in base_render
+        assert '"${ADMIN_MASTER_PASSWORD}"' in base_render

@@ -37,6 +37,9 @@ LABEL org.opencontainers.image.title="myarch" \
 # -----------------------------------------------------------------------------
 # Build arguments
 # -----------------------------------------------------------------------------
+# BuildKit warns about secrets in ARG: the value lands in the image history.
+# These are development defaults only. For anything real, pass the value at
+# build time and rotate it, or mount it with `docker build --secret`.
 ARG ADMIN_MASTER_PASSWORD=ChangeMeAdminMaster
 ARG VNC_PASSWORD=ChangeMeVnc
 ARG CODE_SERVER_PASSWORD=ChangeMeCodeServer
@@ -98,7 +101,7 @@ RUN pacman-key --init \
 
 # administrator-master -- unrestricted sudo
 RUN useradd --create-home --shell /bin/bash --groups wheel administrator-master \
- && echo 'administrator-master:${ADMIN_MASTER_PASSWORD}' | chpasswd \
+ && printf 'administrator-master:%s\n' "${ADMIN_MASTER_PASSWORD}" | chpasswd \
  && printf 'administrator-master ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/10-administrator-master \
  && chmod 0440 /etc/sudoers.d/10-administrator-master \
  && visudo -cf /etc/sudoers.d/10-administrator-master \
@@ -116,8 +119,10 @@ RUN groupadd --gid 1005 pikaur-manager 2>/dev/null || true \
  && chmod 0440 /etc/sudoers.d/20-pikaur-manager \
  && visudo -cf /etc/sudoers.d/20-pikaur-manager \
  && mkdir -p /home/pikaur-manager/.config /home/pikaur-manager/.cache /home/pikaur-manager/.local/share \
- && chown -R pikaur-manager:pikaur-manager /home/pikaur-manager \
- && chage -d 0 pikaur-manager
+ && chown -R pikaur-manager:pikaur-manager /home/pikaur-manager
+# NOTE: pikaur-manager's password is expired *after* the pikaur build below.
+# Expiring it here would make `su - pikaur-manager` prompt for a password
+# change, which cannot succeed in a non-interactive build.
 
 # developer -- ONLY pacman
 RUN useradd --create-home --shell /bin/bash developer \
@@ -177,17 +182,20 @@ RUN ssh-keygen -A \
 # root, which the restricted sudoers rule forbids. We build the package archive
 # as pikaur-manager, then install that archive as root with pacman.
 # =============================================================================
+# runuser drops privileges without PAM's interactive password handling, which
+# su performs even for a non-expired account and which cannot work here.
 RUN chown -R pikaur-manager:pikaur-manager /home/pikaur-manager \
- && sudo -u pikaur-manager git clone --depth 1 https://aur.archlinux.org/pikaur.git /home/pikaur-manager/pikaur \
+ && runuser -u pikaur-manager -- git clone --depth 1 https://aur.archlinux.org/pikaur.git /home/pikaur-manager/pikaur \
  && chown -R pikaur-manager:pikaur-manager /home/pikaur-manager/pikaur \
- && su - pikaur-manager -c 'cd /home/pikaur-manager/pikaur && makepkg -fs --noconfirm --nodeps'
+ && runuser -u pikaur-manager -- bash -lc 'cd /home/pikaur-manager/pikaur && makepkg -fs --noconfirm --nodeps'
 RUN pacman -U --noconfirm /home/pikaur-manager/pikaur/*.pkg.tar.* \
  && pacman -S --noconfirm --needed pyalpm \
  && mkdir -p /home/pikaur-manager/.config \
  && printf '[sync]\nalwaysshowupgrades = no\n\n[build]\nkeepbuilddir = no\nskipreview = no\n' \
       > /home/pikaur-manager/.config/pikaur.conf \
  && chown -R pikaur-manager:pikaur-manager /home/pikaur-manager \
- && pikaur --version
+ && pikaur --version \
+ && chage -d 0 pikaur-manager
 
 {% if gpu_vendor == 'nvidia' %}
 # =============================================================================
