@@ -1,0 +1,22 @@
+{
+  "name": "myarch",
+  "image": "mcr.microsoft.com/devcontainers/universal:2-linux",
+  "features": {},
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb",
+    "storage": "32gb"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "redhat.vscode-yaml",
+        "timonwong.shellcheck"
+      ]
+    }
+  },
+  "remoteUser": "codespace"
+}

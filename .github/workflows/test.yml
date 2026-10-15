@@ -1,0 +1,205 @@
+name: test
+
+# Branch model:
+#   dev  -> fast test (quick feedback, allowed to be red)
+#   main -> full test (the gate before release)
+#   tags -> release artifacts
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Fast test: runs on dev pushes and on every pull request.
+  # ---------------------------------------------------------------------------
+  fast:
+    name: fast test (python ${{ matrix.python-version }})
+    if: github.event_name == 'pull_request' || github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The project supports 3.8+; the newest version proves forward compat.
+        python-version: ["3.8", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --group dev
+
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Verify the template renders on this platform
+        run: uv run python -m myarch.build --model ./examples/demo.gguf --dry-run > /dev/null
+
+  # ---------------------------------------------------------------------------
+  # Full test: the gate on main. Static checks plus the whole suite, and a real
+  # Docker build so template breakage cannot reach a release.
+  # ---------------------------------------------------------------------------
+  full:
+    name: full test
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --group dev
+
+      - name: Lint shell scripts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck entrypoint.sh .devcontainer/post-create.sh
+
+      - name: Run the full test suite
+        run: uv run pytest -q
+
+      - name: Install docker buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the image (no model, CPU path)
+        run: |
+          uv run python -m myarch.build \
+            --model ./examples/demo.gguf \
+            --tag myarch:ci \
+            --context .myarch-build
+
+      - name: Smoke-test the built image
+        run: |
+          docker run --rm --entrypoint /bin/bash myarch:ci -c '
+            set -e
+            echo "--- users ---"
+            id administrator-master >/dev/null && echo "administrator-master ok"
+            id pikaur-manager        >/dev/null && echo "pikaur-manager ok"
+            id developer             >/dev/null && echo "developer ok"
+            id system-manager        >/dev/null && echo "system-manager ok"
+            id service-manager       >/dev/null && echo "service-manager ok"
+            id user                  >/dev/null && echo "user ok"
+            echo "--- sudo policy ---"
+            sudo -l -U developer | grep -q "/usr/bin/pacman" && echo "developer limited to pacman"
+            if sudo -l -U user | grep -q "may run"; then echo "FAIL: user has sudo"; exit 1; fi
+            echo "user has no sudo"
+            echo "--- forced password change ---"
+            for u in user developer system-manager service-manager pikaur-manager; do
+              chage -l "$u" | head -1
+            done
+            echo "--- tooling ---"
+            command -v uv && command -v llama-server && command -v code-server && command -v aichat
+            echo "smoke test passed"
+          '
+
+  # ---------------------------------------------------------------------------
+  # Release: publish artifacts when a release is pushed.
+  # ---------------------------------------------------------------------------
+  release:
+    name: publish release artifacts
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies
+        run: uv sync --group dev
+
+      - name: Run the full test suite before publishing
+        run: uv run pytest -q
+
+      - name: Render the release Dockerfile
+        run: |
+          uv run python -m myarch.build \
+            --model ./examples/demo.gguf \
+            --tag "myarch:${GITHUB_REF_NAME}" \
+            --dry-run --output "myarch-${GITHUB_REF_NAME}.Dockerfile"
+
+      - name: Bundle the release sources
+        run: |
+          mkdir -p dist
+          cp "myarch-${GITHUB_REF_NAME}.Dockerfile" dist/
+          cp Dockerfile.j2 entrypoint.sh pyproject.toml uv.lock README.md dist/
+          tar -czf "dist/myarch-${GITHUB_REF_NAME}.tar.gz" dist/myarch-*.Dockerfile
+          (cd dist && sha256sum ./* > SHA256SUMS)
+
+      - name: Upload artifacts to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+            dist/myarch-*.Dockerfile
+          fail_on_unmatched_files: false
+
+  # ---------------------------------------------------------------------------
+  # Pages: publish the rendered Dockerfile so it is always inspectable.
+  # ---------------------------------------------------------------------------
+  pages:
+    name: publish site
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies
+        run: uv sync --group dev
+
+      - name: Render the reference Dockerfile
+        run: |
+          uv run python -m myarch.build \
+            --model ./examples/demo.gguf \
+            --dry-run --output ./_site/Dockerfile.cpu.txt
+          cp README.md ./_site/
+
+      - name: Add the demo model note
+        run: |
+          printf '%s\n' \
+            '# myarch' \
+            '' \
+            'Rendered Arch Linux AI container Dockerfile, generated by CI.' \
+            '' \
+            '- `Dockerfile.cpu.txt` - CPU/llama.cpp variant of the template output' \
+            > ./_site/index.md
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
