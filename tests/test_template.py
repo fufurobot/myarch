@@ -36,8 +36,27 @@ USER_PASSWORDS = {
 }
 
 
+def sudoers_rule(text: str, username: str) -> str:
+    """Extract a user's sudoers rule from the rendered Dockerfile.
+
+    Rules are written inside a `printf` argument on a line-continued RUN
+    instruction, so they are not at the start of a physical line. Matching
+    anywhere in the file keeps the assertion about *policy* rather than about
+    incidental shell formatting.
+    """
+    match = re.search(r"%s\s+ALL=\([^)]*\)\s*([^\n']*)" % re.escape(username), text)
+    assert match, "no sudoers rule found for %s" % username
+    # Strip the trailing literal \n and any escaping from the shell printf.
+    return match.group(1).strip().replace("\\n", "").strip()
+
+
 def render(**overrides) -> str:
-    """Render the template with a complete, valid default context."""
+    """Render the template with a complete, valid default context.
+
+    Port convention (must not collide):
+      llama.cpp -> 8080, vLLM -> 8081, code-server -> 8443.
+    """
+    llm_backend = overrides.get("llm_backend", "llama.cpp")
     context = {
         "gpu_vendor": "none",
         "gpu_driver_package": "",
@@ -46,12 +65,12 @@ def render(**overrides) -> str:
         "gpu_needs_aur_fallback": False,
         "python_version": "3.12",
         "torch_backend": "cpu",
-        "llm_backend": "llama.cpp",
+        "llm_backend": llm_backend,
         "model_kind": "gguf",
         "model_source": "models/model.gguf",
         "model_repo_id": "",
-        "code_server_port": 8080,
-        "llm_port": 8081,
+        "code_server_port": 8443,
+        "llm_port": 8081 if llm_backend == "vllm" else 8080,
         "vnc_resolution": "1920x1080",
         "enable_ssh": True,
     }
@@ -120,39 +139,32 @@ class TestUsers:
         )
 
     def test_developer_sudo_is_only_pacman(self, base_render):
-        match = re.search(r"^developer\s+ALL=.*$", base_render, re.MULTILINE)
-        assert match, "developer must have a sudoers rule"
-        rule = match.group(0)
+        rule = sudoers_rule(base_render, "developer")
         assert "/usr/bin/pacman" in rule
         # no extra commands beyond pacman
-        commands = [c.strip() for c in rule.split("=", 1)[1].split(",")]
+        commands = [c.strip() for c in rule.split(",")]
         assert len(commands) == 1, "developer must be limited to exactly one command"
 
     def test_system_manager_sudo_is_limited_to_fdisk_mount_ls(self, base_render):
-        match = re.search(r"^system-manager\s+ALL=.*$", base_render, re.MULTILINE)
-        assert match, "system-manager must have a sudoers rule"
-        rule = match.group(0)
+        rule = sudoers_rule(base_render, "system-manager")
         for allowed in ("fdisk", "mount", "ls"):
             assert allowed in rule
-        commands = [c.strip() for c in rule.split("=", 1)[1].split(",")]
+        commands = [c.strip() for c in rule.split(",")]
         assert len(commands) == 3, "system-manager must be limited to exactly three commands"
 
     def test_service_manager_sudo_is_only_systemctl(self, base_render):
-        match = re.search(r"^service-manager\s+ALL=.*$", base_render, re.MULTILINE)
-        assert match, "service-manager must have a sudoers rule"
-        rule = match.group(0)
+        rule = sudoers_rule(base_render, "service-manager")
         assert "/usr/bin/systemctl" in rule
-        commands = [c.strip() for c in rule.split("=", 1)[1].split(",")]
+        commands = [c.strip() for c in rule.split(",")]
         assert len(commands) == 1
 
     def test_plain_user_has_no_sudo_rule(self, base_render):
         """'user' is just a user and can sudo nothing."""
-        assert not re.search(r"^user\s+ALL=", base_render, re.MULTILINE)
-        assert "user ALL=" not in base_render
+        assert not re.search(r"\buser\s+ALL=", base_render)
 
     def test_no_group_sudo_regression(self, base_render):
         """No rule may grant sudo to a group (e.g. %wheel)."""
-        assert not re.search(r"^%wheel\s+ALL=", base_render, re.MULTILINE)
+        assert not re.search(r"%\w+\s+ALL=", base_render)
 
     def test_sudoers_files_are_validated(self, base_render):
         """Dropped-in sudoers files must be syntax-checked and 0440."""
@@ -394,9 +406,15 @@ class TestAichat:
             assert "openai-compatible" in out or "openai" in out
 
     def test_points_to_the_right_port_per_backend(self, nvidia_render, base_render):
-        # vLLM on 8081, llama.cpp on 8080
-        assert "8081" in nvidia_render
-        assert "8080" in base_render
+        # vLLM on 8081, llama.cpp on 8080 (llama.cpp's own default port).
+        assert "127.0.0.1:8081/v1" in nvidia_render
+        assert "127.0.0.1:8080/v1" in base_render
+
+    def test_code_server_port_does_not_collide_with_llm(self, base_render, nvidia_render):
+        """Both servers default to 8080; they must not be given the same port."""
+        for out, llm_port in ((base_render, "8080"), (nvidia_render, "8081")):
+            assert "0.0.0.0:8443" in out, "code-server must bind a non-colliding port"
+            assert "0.0.0.0:%s" % llm_port not in out
 
 
 # ---------------------------------------------------------------------------
@@ -414,18 +432,29 @@ class TestModelAndRuntime:
         assert "COPY" in out
         assert "hf_model" in out or "Qwen2.5-7B" in out
 
-    def test_remote_repo_id_is_downloaded_at_runtime(self):
-        out = render(model_kind="huggingface", model_source="meta-llama/Llama-3-8B", llm_backend="vllm")
+    def test_remote_repo_id_is_downloaded_at_build_time(self):
+        """A repo id is fetched during the build so the image is self-contained."""
+        out = render(
+            model_kind="huggingface",
+            model_source="meta-llama/Llama-3-8B",
+            model_repo_id="meta-llama/Llama-3-8B",
+            llm_backend="vllm",
+        )
         assert "meta-llama/Llama-3-8B" in out
-        assert "huggingface-cli" in out or "hf download" in out or "snapshot_download" in out
+        assert "hf download" in out or "huggingface-cli" in out or "snapshot_download" in out
 
     def test_entrypoint_exists_and_is_executable(self, base_render):
         assert "ENTRYPOINT" in base_render
         assert "chmod +x" in base_render
 
-    def test_required_ports_exposed(self, base_render):
-        for port in ("22", "5900", "8080", "8081"):
-            assert port in base_render
+    def test_required_ports_exposed(self, base_render, nvidia_render):
+        """Every service port is exposed, including only the active LLM port."""
+        for out, llm_port in ((base_render, "8080"), (nvidia_render, "8081")):
+            expose = re.search(r"^EXPOSE .*$", out, re.MULTILINE)
+            assert expose, "Dockerfile must declare EXPOSE"
+            ports = expose.group(0).split()[1:]
+            for required in ("22", "5900", "8443", "6080", llm_port):
+                assert required in ports, "port %s must be exposed" % required
 
     def test_uses_archlinux_base(self, base_render):
         assert re.search(r"^FROM\s+archlinux", base_render, re.MULTILINE)

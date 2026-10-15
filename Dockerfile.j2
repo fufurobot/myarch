@@ -1,0 +1,433 @@
+# syntax=docker/dockerfile:1
+# =============================================================================
+# Arch Linux AI development container
+# -----------------------------------------------------------------------------
+# Rendered by `build.py` from Dockerfile.j2 -- do not edit the generated file.
+#
+# Template context (all keys are required, StrictUndefined is enabled):
+#   gpu_vendor             none | nvidia | amd
+#   gpu_driver_package     Arch package providing the kernel module
+#   gpu_name               marketing name, for labels
+#   gpu_driver_version     host driver version, informational
+#   gpu_needs_aur_fallback driver too old for official repos -> use pikaur
+#   python_version         resolved and clamped by detect.py
+#   torch_backend          cpu | cu128 | rocm6.4
+#   llm_backend            llama.cpp | vllm
+#   model_kind             gguf | huggingface
+#   model_source           build-context path or HuggingFace repo id
+#   model_repo_id          set only for remote HuggingFace repo ids
+#   code_server_port       HTTP port for code-server
+#   llm_port               OpenAI-compatible port for the model server
+#   vnc_resolution         virtual screen geometry
+#   enable_ssh             install and start sshd
+# =============================================================================
+
+FROM archlinux:latest
+
+LABEL org.opencontainers.image.title="myarch" \
+      org.opencontainers.image.description="Arch Linux AI remote development container" \
+      org.opencontainers.image.source="https://github.com/fufurobot/myarch" \
+{% if gpu_name %}
+      org.opencontainers.image.gpu="{{ gpu_name }}" \
+{% endif %}
+      myarch.gpu.vendor="{{ gpu_vendor }}" \
+      myarch.torch.backend="{{ torch_backend }}" \
+      myarch.llm.backend="{{ llm_backend }}"
+
+# -----------------------------------------------------------------------------
+# Build arguments
+# -----------------------------------------------------------------------------
+ARG ADMIN_MASTER_PASSWORD=ChangeMeAdminMaster
+ARG VNC_PASSWORD=ChangeMeVnc
+ARG CODE_SERVER_PASSWORD=ChangeMeCodeServer
+ARG PYTHON_VERSION={{ python_version }}
+ARG CODE_SERVER_VERSION=4.141.0
+ARG LLAMA_CPP_REF=master
+
+ENV LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_INSTALL_DIR=/opt/uv/python \
+    VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:/usr/local/bin:${PATH}" \
+    MYARCH_LLM_BACKEND={{ llm_backend }} \
+    MYARCH_GPU_VENDOR={{ gpu_vendor }}
+
+# =============================================================================
+# 1. Base system
+# =============================================================================
+RUN pacman-key --init \
+ && pacman-key --populate archlinux \
+ && pacman -Sy --noconfirm --needed archlinux-keyring \
+ && pacman -Syu --noconfirm \
+ && pacman -S --noconfirm --needed \
+      base-devel \
+      bash-completion \
+      ca-certificates \
+      cmake \
+      curl \
+      git \
+      jq \
+      less \
+      nano \
+      ninja \
+      openssh \
+      procps-ng \
+      python \
+      rsync \
+      sudo \
+      systemd \
+      unzip \
+      vim \
+      wget \
+      which \
+      zip \
+ && sed -i 's/^#\(en_US\.UTF-8\)/\1/' /etc/locale.gen \
+ && locale-gen \
+ && echo "LANG=en_US.UTF-8" > /etc/locale.conf \
+ && rm -rf /var/cache/pacman/pkg/* /var/lib/pacman/sync/*
+
+# =============================================================================
+# 1b. Users and groups with least-privilege sudo
+# -----------------------------------------------------------------------------
+# Each grant is written to its own file in /etc/sudoers.d and validated with
+# `visudo -cf`, so a malformed rule fails the build instead of locking sudo.
+# =============================================================================
+
+# administrator-master -- unrestricted sudo
+RUN useradd --create-home --shell /bin/bash --groups wheel administrator-master \
+ && echo 'administrator-master:${ADMIN_MASTER_PASSWORD}' | chpasswd \
+ && printf 'administrator-master ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/10-administrator-master \
+ && chmod 0440 /etc/sudoers.d/10-administrator-master \
+ && visudo -cf /etc/sudoers.d/10-administrator-master \
+ && chage -d 0 administrator-master
+
+# pikaur-manager -- ONLY the exact pikaur invocation.
+# [!-]* permits any argument that does not begin with a dash, which blocks
+# option injection such as `--pikaur-config=/etc/shadow`.
+RUN groupadd --gid 1005 pikaur-manager 2>/dev/null || true \
+ && useradd --create-home --shell /bin/bash --uid 1005 --gid 1005 --home-dir /home/pikaur-manager pikaur-manager \
+ && echo 'pikaur-manager:iknowtheremotecodeisdangerous' | chpasswd \
+ && printf '%s\n' \
+      'pikaur-manager ALL=(root) /usr/bin/pikaur -Syu [!-]* --pikaur-config=/home/pikaur-manager/.config/pikaur.conf --user-id=1005 --group-id=1005 --home-dir=/home/pikaur-manager --xdg-cache-home=/home/pikaur-manager/.cache --xdg-data-home=/home/pikaur-manager/.local/share' \
+      > /etc/sudoers.d/20-pikaur-manager \
+ && chmod 0440 /etc/sudoers.d/20-pikaur-manager \
+ && visudo -cf /etc/sudoers.d/20-pikaur-manager \
+ && mkdir -p /home/pikaur-manager/.config /home/pikaur-manager/.cache /home/pikaur-manager/.local/share \
+ && chown -R pikaur-manager:pikaur-manager /home/pikaur-manager \
+ && chage -d 0 pikaur-manager
+
+# developer -- ONLY pacman
+RUN useradd --create-home --shell /bin/bash developer \
+ && echo 'developer:iwillnotinstallpackagesidonotownsourcecode' | chpasswd \
+ && printf 'developer ALL=(root) /usr/bin/pacman\n' > /etc/sudoers.d/30-developer \
+ && chmod 0440 /etc/sudoers.d/30-developer \
+ && visudo -cf /etc/sudoers.d/30-developer \
+ && chage -d 0 developer
+
+# system-manager -- ONLY fdisk, mount and ls
+RUN useradd --create-home --shell /bin/bash system-manager \
+ && echo 'system-manager:iwillnotstealotherusersdata' | chpasswd \
+ && printf 'system-manager ALL=(root) /usr/bin/fdisk, /usr/bin/mount, /usr/bin/ls\n' \
+      > /etc/sudoers.d/40-system-manager \
+ && chmod 0440 /etc/sudoers.d/40-system-manager \
+ && visudo -cf /etc/sudoers.d/40-system-manager \
+ && chage -d 0 system-manager
+
+# service-manager -- ONLY systemctl
+RUN useradd --create-home --shell /bin/bash service-manager \
+ && echo 'service-manager:iwillnotstartuntrustedservices' | chpasswd \
+ && printf 'service-manager ALL=(root) /usr/bin/systemctl\n' > /etc/sudoers.d/50-service-manager \
+ && chmod 0440 /etc/sudoers.d/50-service-manager \
+ && visudo -cf /etc/sudoers.d/50-service-manager \
+ && chage -d 0 service-manager
+
+# user -- an ordinary account with no sudo rights at all.
+RUN useradd --create-home --shell /bin/bash user \
+ && echo 'user:iamsafe' | chpasswd \
+ && chage -d 0 user \
+ && rm -f /etc/sudoers.d/user
+
+# The container runs with the primary desktop/development account as `user`.
+USER root
+
+{% if enable_ssh %}
+# =============================================================================
+# 1c. sshd with password authentication
+# =============================================================================
+RUN ssh-keygen -A \
+ && sed -i \
+      -e 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' \
+      -e 's/^#\?PermitRootLogin.*/PermitRootLogin no/' \
+      -e 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' \
+      /etc/ssh/sshd_config \
+ && printf '\n# myarch overrides\nPasswordAuthentication yes\nPermitRootLogin no\n' \
+      > /etc/ssh/sshd_config.d/10-myarch.conf \
+ && mkdir -p /run/sshd \
+ && /usr/sbin/sshd -t
+{% endif %}
+
+# =============================================================================
+# 2. pikaur (AUR helper) built from source with makepkg
+# -----------------------------------------------------------------------------
+# makepkg refuses to run as root, so the build runs as pikaur-manager via su.
+# The root-installing makepkg flag is deliberately NOT used: installing needs
+# root, which the restricted sudoers rule forbids. We build the package archive
+# as pikaur-manager, then install that archive as root with pacman.
+# =============================================================================
+RUN chown -R pikaur-manager:pikaur-manager /home/pikaur-manager \
+ && sudo -u pikaur-manager git clone --depth 1 https://aur.archlinux.org/pikaur.git /home/pikaur-manager/pikaur \
+ && chown -R pikaur-manager:pikaur-manager /home/pikaur-manager/pikaur \
+ && su - pikaur-manager -c 'cd /home/pikaur-manager/pikaur && makepkg -fs --noconfirm --nodeps'
+RUN pacman -U --noconfirm /home/pikaur-manager/pikaur/*.pkg.tar.* \
+ && pacman -S --noconfirm --needed pyalpm \
+ && mkdir -p /home/pikaur-manager/.config \
+ && printf '[sync]\nalwaysshowupgrades = no\n\n[build]\nkeepbuilddir = no\nskipreview = no\n' \
+      > /home/pikaur-manager/.config/pikaur.conf \
+ && chown -R pikaur-manager:pikaur-manager /home/pikaur-manager \
+ && pikaur --version
+
+{% if gpu_vendor == 'nvidia' %}
+# =============================================================================
+# 3. NVIDIA driver (templated from host detection)
+# -----------------------------------------------------------------------------
+# Host reported: {{ gpu_name or 'NVIDIA GPU' }} (driver {{ gpu_driver_version or 'unknown' }})
+{% if gpu_needs_aur_fallback %}
+# Driver {{ gpu_driver_version }} is older than anything Arch ships, so the
+# matching legacy module is resolved through pikaur (AUR).
+RUN pacman -S --noconfirm --needed nvidia-utils \
+ && sudo -u pikaur-manager pikaur -S --noconfirm --noprogressbar {{ gpu_driver_package }}
+{% else %}
+RUN pacman -S --noconfirm --needed \
+      {{ gpu_driver_package }} \
+      nvidia-utils \
+      cuda \
+      opencl-nvidia
+{% endif %}
+# Requirement: *-smi must be available after this step.
+RUN command -v nvidia-smi \
+ && nvidia-smi --version || echo "nvidia-smi present but no device in build sandbox"
+
+{% elif gpu_vendor == 'amd' %}
+# =============================================================================
+# 3. AMD driver (templated from host detection)
+# -----------------------------------------------------------------------------
+# Host reported: {{ gpu_name or 'AMD GPU' }}
+RUN pacman -S --noconfirm --needed \
+      {{ gpu_driver_package }} \
+      mesa \
+      vulkan-radeon \
+      libva-mesa-driver \
+      rocm-hip-sdk \
+      rocm-opencl-runtime \
+      rocminfo
+# Requirement: *-smi must be available after this step.
+RUN command -v rocm-smi \
+ && rocm-smi --showproductname || echo "rocm-smi present but no device in build sandbox"
+
+{% else %}
+# =============================================================================
+# 3. GPU drivers -- none requested, CPU-only image
+# =============================================================================
+RUN echo "No usable GPU detected on the host; building a CPU-only image."
+{% endif %}
+
+# =============================================================================
+# 4. KDE Plasma desktop + VNC server, one 1920x1080 virtual screen
+# =============================================================================
+RUN pacman -S --noconfirm --needed \
+      plasma-desktop \
+      plasma-workspace \
+      konsole \
+      dolphin \
+      systemsettings \
+      xorg-server \
+      xorg-xinit \
+      xorg-xauth \
+      xorg-xrdb \
+      xorg-setxkbmap \
+      dbus \
+      ttf-dejavu \
+      tigervnc \
+      novnc \
+      websockify \
+ && rm -rf /var/cache/pacman/pkg/*
+
+# Exactly one virtual screen at {{ vnc_resolution }}, running KDE Plasma.
+# The server is started once, at runtime, by entrypoint.sh with:
+#     vncserver :1 -geometry {{ vnc_resolution }} -depth 24
+RUN mkdir -p /home/user/.vnc /home/user/.config \
+ && printf '#!/bin/sh\nunset SESSION_MANAGER\nunset DBUS_SESSION_BUS_ADDRESS\nexec dbus-launch --exit-with-session startplasma-x11\n' \
+      > /home/user/.vnc/xstartup \
+ && chmod +x /home/user/.vnc/xstartup \
+ && printf 'geometry={{ vnc_resolution }}\ndepth=24\n' > /home/user/.vnc/config \
+ && printf '%s\n' "${VNC_PASSWORD}" | vncpasswd -f > /home/user/.vnc/passwd \
+ && chmod 0600 /home/user/.vnc/passwd \
+ && chown -R user:user /home/user/.vnc /home/user/.config \
+ && echo "virtual screen pinned to {{ vnc_resolution }}" > /home/user/.vnc/GEOMETRY
+
+# =============================================================================
+# 5. uv + Python matching the analysed script
+# =============================================================================
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh \
+ && uv --version \
+ && uv python install {{ python_version }} \
+ && uv python pin {{ python_version }} \
+ && uv venv /opt/venv --python {{ python_version }} \
+ && /opt/venv/bin/python --version
+
+# =============================================================================
+# 6. PyTorch for the detected backend
+# =============================================================================
+RUN uv pip install --python /opt/venv/bin/python --upgrade pip setuptools wheel
+{% if torch_backend == 'cu128' %}
+RUN uv pip install --python /opt/venv/bin/python torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+{% elif torch_backend == 'rocm6.4' %}
+RUN uv pip install --python /opt/venv/bin/python torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.4
+{% else %}
+RUN uv pip install --python /opt/venv/bin/python torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+{% endif %}
+
+# =============================================================================
+# 7. Inference backend: vLLM on GPU, llama.cpp on CPU
+# =============================================================================
+{% if llm_backend == 'vllm' %}
+RUN uv pip install --python /opt/venv/bin/python vllm \
+ && /opt/venv/bin/python -c "import vllm; print('vllm', vllm.__version__)"
+{% else %}
+# llama.cpp is built from source so it can target the host CPU/GPU correctly.
+RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp /opt/llama.cpp \
+ && cd /opt/llama.cpp \
+ && cmake -B build -DCMAKE_BUILD_TYPE=Release \
+{% if gpu_vendor == 'nvidia' %}
+      -DGGML_CUDA=ON \
+{% elif gpu_vendor == 'amd' %}
+      -DGGML_HIPBLAS=ON \
+{% else %}
+      -DGGML_NATIVE=ON \
+{% endif %}
+ && cmake --build build --config Release -j"$(nproc)" \
+ && install -m 0755 build/bin/llama-server /usr/local/bin/llama-server \
+ && install -m 0755 build/bin/llama-cli /usr/local/bin/llama-cli \
+ && rm -rf /opt/llama.cpp/build/CMakeFiles
+{% endif %}
+
+# =============================================================================
+# 8. code-server, installed per the code-server-aur method
+# -----------------------------------------------------------------------------
+# https://github.com/coder/code-server-aur -- the AUR PKGBUILD unpacks the
+# upstream GitHub release tarball into /usr/lib/code-server and symlinks the
+# launcher. We therefore fetch the GitHub release tarball directly instead of
+# piping the vendor installer script, which no longer serves generic clients.
+# =============================================================================
+ARG CODE_SERVER_VERSION
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    case "$arch" in \
+      x86_64)  cs_arch=amd64 ;; \
+      aarch64) cs_arch=arm64 ;; \
+      *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    url="https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server-${CODE_SERVER_VERSION}-linux-${cs_arch}.tar.gz"; \
+    curl -fsSL "$url" -o /tmp/code-server.tar.gz; \
+    mkdir -p /usr/lib/code-server; \
+    tar -xzf /tmp/code-server.tar.gz -C /usr/lib/code-server --strip-components=1; \
+    rm -f /tmp/code-server.tar.gz; \
+    ln -sf /usr/lib/code-server/bin/code-server /usr/bin/code-server; \
+    code-server --version
+
+# Configure code-server for the `user` account.
+RUN mkdir -p /home/user/.config/code-server /home/user/.local/share/code-server \
+ && printf 'bind-addr: 0.0.0.0:{{ code_server_port }}\nauth: password\npassword: ${CODE_SERVER_PASSWORD}\ncert: false\n' \
+      > /home/user/.config/code-server/config.yaml \
+ && chown -R user:user /home/user/.config/code-server /home/user/.local/share/code-server
+
+# Continue extension, pointed at the closed-loop local model server.
+RUN sudo -u user code-server --install-extension Continue.continue || \
+    echo "Continue extension install deferred to runtime" \
+ && mkdir -p /home/user/.continue \
+ && printf '%s\n' \
+      'name: myarch-local' \
+      'version: 1.0.0' \
+      'schema: v1' \
+      'models:' \
+      '  - name: myarch-local' \
+      '    provider: openai' \
+      '    model: local-model' \
+      '    apiBase: http://127.0.0.1:{{ llm_port }}/v1' \
+      '    apiKey: myarch-local' \
+      '    roles:' \
+      '      - chat' \
+      '      - edit' \
+      '      - apply' \
+      'context:' \
+      '  - provider: code' \
+      '  - provider: diff' \
+      '  - provider: terminal' \
+      '  - provider: problems' \
+      > /home/user/.continue/config.yaml \
+ && chown -R user:user /home/user/.continue
+
+# =============================================================================
+# 9. aichat, configured against the same local model server
+# -----------------------------------------------------------------------------
+# Research note: aichat ships in the official `extra` repository (0.30.0-4);
+# it is NOT an AUR package, so pacman is the correct installer.
+RUN pacman -S --noconfirm --needed aichat \
+ && rm -rf /var/cache/pacman/pkg/* \
+ && mkdir -p /home/user/.config/aichat \
+ && printf '%s\n' \
+      'model: local:local-model' \
+      'clients:' \
+      '  - type: openai-compatible' \
+      '    name: local' \
+      '    api_base: http://127.0.0.1:{{ llm_port }}/v1' \
+      '    api_key: myarch-local' \
+      '    models:' \
+      '      - name: local-model' \
+      '        max_input_tokens: 32768' \
+      > /home/user/.config/aichat/config.yaml \
+ && chown -R user:user /home/user/.config/aichat
+
+# =============================================================================
+# Model packaging
+# =============================================================================
+{% if model_kind == 'gguf' %}
+# llama.cpp consumes a single gguf file.
+COPY {{ model_source }} /models/model.gguf
+RUN chmod 0644 /models/model.gguf
+ENV MYARCH_MODEL_PATH=/models/model.gguf
+{% elif model_repo_id %}
+# Remote HuggingFace repository: fetched with the huggingface_hub CLI at build
+# time so the image is self-contained without vendoring weights into the
+# build context.
+RUN uv pip install --python /opt/venv/bin/python huggingface_hub[cli]
+RUN mkdir -p /models/hf_model \
+ && /opt/venv/bin/hf download {{ model_repo_id }} --local-dir /models/hf_model \
+ && chown -R user:user /models
+ENV MYARCH_MODEL_PATH=/models/hf_model \
+    MYARCH_MODEL_REPO={{ model_repo_id }}
+{% else %}
+# Local HuggingFace model folder baked into the image.
+COPY {{ model_source }} /models/hf_model
+RUN chmod -R a+rX /models/hf_model
+ENV MYARCH_MODEL_PATH=/models/hf_model
+{% endif %}
+
+# =============================================================================
+# Runtime
+# =============================================================================
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh \
+ && bash -n /usr/local/bin/entrypoint.sh
+
+EXPOSE 22 {{ 5900 }} {{ code_server_port }} {{ llm_port }} 6080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
+    CMD curl -fsS http://127.0.0.1:{{ llm_port }}/v1/models || exit 1
+
+WORKDIR /home/user
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["sleep", "infinity"]
