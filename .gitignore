@@ -233,3 +233,4 @@ Dockerfile
 .uv-cache/
 .myarch-build/
 .myarch-dry-run.Dockerfile
+.uv-tools/

@@ -68,10 +68,10 @@ jobs:
         run: uv sync --group dev
 
       - name: Lint shell scripts
+        # Pinned so the lint result cannot change under us with a runner image bump.
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq shellcheck
-          shellcheck entrypoint.sh .devcontainer/post-create.sh
+          uv tool run --from shellcheck-py shellcheck \
+            entrypoint.sh .devcontainer/post-create.sh
 
       - name: Run the full test suite
         run: uv run pytest -q

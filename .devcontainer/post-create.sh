@@ -34,6 +34,9 @@ export PATH="${HOME}/.local/bin:${PATH}"
 
 # Persist PATH for later shells (Codespaces starts a fresh shell per terminal).
 if ! grep -q 'myarch: uv path' "${HOME}/.bashrc" 2>/dev/null; then
+  # Single quotes are intentional: $HOME and $PATH must stay literal here so the
+  # interactive login shell expands them itself at start-up time.
+  # shellcheck disable=SC2016
   printf '\n# myarch: uv path\nexport PATH="${HOME}/.local/bin:${PATH}"\n' >> "${HOME}/.bashrc"
 fi
 
@@ -52,13 +55,19 @@ fi
 # -----------------------------------------------------------------------------
 if have apt-get && ! have shellcheck; then
   log "installing shellcheck via apt-get"
-  sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck || log "shellcheck install skipped"
+  if ! { sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck; }; then
+    log "shellcheck install skipped"
+  fi
 elif have dnf && ! have shellcheck; then
   log "installing shellcheck via dnf"
-  sudo dnf install -y -q shellcheck || log "shellcheck install skipped"
+  if ! sudo dnf install -y -q shellcheck; then
+    log "shellcheck install skipped"
+  fi
 elif have pacman && ! have shellcheck; then
   log "installing shellcheck via pacman"
-  sudo pacman -S --noconfirm --needed shellcheck || log "shellcheck install skipped"
+  if ! sudo pacman -S --noconfirm --needed shellcheck; then
+    log "shellcheck install skipped"
+  fi
 fi
 
 # -----------------------------------------------------------------------------
