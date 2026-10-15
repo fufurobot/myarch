@@ -129,9 +129,24 @@ class TestRenderToFile:
 
 
 class TestBuildArguments:
-    def test_default_tag_is_derived(self, gguf, cpu_env):
-        args = build.parse_args(["--model", str(gguf)])
-        assert args.tag
+    def test_derived_tag_reflects_backend(self, gguf, cpu_env, tmp_path, monkeypatch):
+        """With no explicit tag, the image name encodes the chosen backends."""
+        docker = FakeDocker()
+        monkeypatch.setattr(build, "_run", docker)
+        build.main(["--model", str(gguf), "--output", str(tmp_path / "Dockerfile")])
+        tags = [docker.last[i + 1] for i, a in enumerate(docker.last) if a == "-t"]
+        assert tags, "docker build must be given a tag"
+        assert "llamacpp" in tags[0]
+        assert "cpu" in tags[0]
+
+    def test_explicit_tag_overrides_derived_tag(self, gguf, cpu_env, tmp_path, monkeypatch):
+        docker = FakeDocker()
+        monkeypatch.setattr(build, "_run", docker)
+        build.main(
+            ["--model", str(gguf), "--tag", "custom:1", "--output", str(tmp_path / "Dockerfile")]
+        )
+        tags = [docker.last[i + 1] for i, a in enumerate(docker.last) if a == "-t"]
+        assert "custom:1" in tags
 
     def test_dry_run_does_not_call_docker(self, gguf, cpu_env, tmp_path, monkeypatch, capsys):
         docker = FakeDocker()

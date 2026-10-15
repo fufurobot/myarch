@@ -231,3 +231,5 @@ Dockerfile
 .secrets.env
 .scratch/
 .uv-cache/
+.myarch-build/
+.myarch-dry-run.Dockerfile
