@@ -184,6 +184,19 @@ RUN ssh-keygen -A \
 # =============================================================================
 # runuser drops privileges without PAM's interactive password handling, which
 # su performs even for a non-expired account and which cannot work here.
+#
+# `makepkg -s` would install the makedepends itself, but that needs root, which
+# the restricted pikaur-manager sudoers rule deliberately does not grant. So the
+# dependencies are installed here as root and makepkg runs with --nodeps. The
+# list mirrors makedepends in the AUR PKGBUILD; python-markdown-it-py in
+# particular is required by pikaur's man-page generator.
+RUN pacman -S --noconfirm --needed \
+      python-wheel \
+      python-hatchling \
+      python-build \
+      python-installer \
+      python-setuptools \
+      python-markdown-it-py
 RUN chown -R pikaur-manager:pikaur-manager /home/pikaur-manager \
  && runuser -u pikaur-manager -- git clone --depth 1 https://aur.archlinux.org/pikaur.git /home/pikaur-manager/pikaur \
  && chown -R pikaur-manager:pikaur-manager /home/pikaur-manager/pikaur \

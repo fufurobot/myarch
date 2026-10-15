@@ -570,3 +570,35 @@ class TestBuildTimeOrdering:
         """A single-quoted reference would store the literal string instead."""
         assert "'${ADMIN_MASTER_PASSWORD}'" not in base_render
         assert '"${ADMIN_MASTER_PASSWORD}"' in base_render
+
+
+class TestPikaurBuildDependencies:
+    """makepkg runs with --nodeps, so its makedepends must be installed as root.
+
+    Regression: pikaur's man-page generator imports markdown_it, and without it
+    `make` failed with 'No module named markdown_it' inside the real build.
+    """
+
+    # From makedepends in the AUR PKGBUILD.
+    MAKEDEPENDS = (
+        "python-wheel",
+        "python-hatchling",
+        "python-build",
+        "python-installer",
+        "python-setuptools",
+        "python-markdown-it-py",
+    )
+
+    @pytest.mark.parametrize("package", MAKEDEPENDS)
+    def test_makedepend_is_installed(self, base_render, package):
+        assert package in base_render, "%s is a pikaur makedepend" % package
+
+    def test_makedepends_precede_the_makepkg_run(self, base_render):
+        deps_at = base_render.index("python-markdown-it-py")
+        build_at = base_render.index("makepkg -fs")
+        assert deps_at < build_at, "makedepends must be installed before makepkg runs"
+
+    def test_makepkg_does_not_try_to_self_install_deps(self, base_render):
+        """-s would need root, which the pikaur-manager rule does not grant."""
+        assert "makepkg -fs --noconfirm --nodeps" in base_render
+        assert "makepkg -fsi" not in base_render
