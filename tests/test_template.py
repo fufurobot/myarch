@@ -8,6 +8,7 @@ forced password change, sshd, and per-requirement installation steps.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
@@ -486,3 +487,48 @@ class TestTemplateHygiene:
     def test_is_valid_dockerfile_shape(self, base_render):
         assert base_render.lstrip().startswith("#")
         assert re.search(r"^FROM\s+\S+", base_render, re.MULTILINE)
+
+
+class TestEntrypointCoverage:
+    """Every exposed port must actually be served by entrypoint.sh.
+
+    Regression guard: noVNC was originally exposed on 6080 while nothing ever
+    started websockify, so the advertised browser desktop did not exist.
+    """
+
+    @pytest.fixture(scope="class")
+    def entry(self) -> str:
+        return Path("entrypoint.sh").read_text(encoding="utf-8")
+
+    def test_starts_sshd(self, entry):
+        assert "sshd" in entry
+
+    def test_starts_vnc_with_the_templated_geometry(self, entry):
+        assert "vncserver" in entry
+        assert "VNC_GEOMETRY" in entry
+
+    def test_starts_code_server(self, entry):
+        assert "code-server" in entry
+
+    def test_starts_novnc(self, entry):
+        assert "websockify" in entry, "noVNC/6080 is exposed, so websockify must start"
+
+    def test_starts_the_model_server(self, entry):
+        assert "llama-server" in entry
+        assert "vllm" in entry
+
+    def test_only_one_virtual_screen_is_ever_started(self, entry):
+        assert len(re.findall(r"vncserver\s", entry)) == 1
+
+    def test_refuses_non_gguf_on_the_cpu_path(self, entry):
+        """llama.cpp cannot load safetensors, so the entrypoint must reject them."""
+        assert "*.gguf" in entry
+
+    def test_is_executable(self):
+        assert Path("entrypoint.sh").stat().st_mode & 0o111
+
+    def test_has_valid_shell_syntax(self):
+        import subprocess
+
+        proc = subprocess.run(["bash", "-n", "entrypoint.sh"], capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr

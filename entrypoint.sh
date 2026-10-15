@@ -19,6 +19,7 @@ LLM_PORT="${LLM_PORT:-8080}"
 VNC_GEOMETRY="${VNC_GEOMETRY:-1920x1080}"
 VNC_DISPLAY="${VNC_DISPLAY:-:1}"
 VNC_PORT="${VNC_PORT:-5900}"
+NOVNC_PORT="${NOVNC_PORT:-6080}"
 
 # -----------------------------------------------------------------------------
 # 1. Model server
@@ -77,6 +78,23 @@ start_vnc() {
 }
 
 # -----------------------------------------------------------------------------
+# 2b. noVNC: browser access to the very same single virtual screen
+# -----------------------------------------------------------------------------
+start_novnc() {
+  if pgrep -f websockify >/dev/null 2>&1; then
+    log "noVNC already running"
+    return 0
+  fi
+  if [ ! -d /usr/share/novnc ]; then
+    log "noVNC not installed; skipping browser desktop"
+    return 0
+  fi
+  log "starting noVNC on port ${NOVNC_PORT} (websockify -> ${VNC_PORT})"
+  websockify --web /usr/share/novnc "${NOVNC_PORT}" "localhost:${VNC_PORT}" \
+    >>/var/log/myarch-novnc.log 2>&1 &
+}
+
+# -----------------------------------------------------------------------------
 # 3. code-server
 # -----------------------------------------------------------------------------
 start_code_server() {
@@ -105,10 +123,11 @@ start_sshd() {
 
 start_llm
 start_vnc
+start_novnc
 start_code_server
 start_sshd
 
-log "ready -- ssh :22 | vnc ${VNC_DISPLAY} :${VNC_PORT} (${VNC_GEOMETRY}) | code-server :${CODE_SERVER_PORT} | ${LLM_BACKEND} :${LLM_PORT}"
+log "ready -- ssh :22 | vnc ${VNC_DISPLAY} :${VNC_PORT} (${VNC_GEOMETRY}) | novnc :${NOVNC_PORT} | code-server :${CODE_SERVER_PORT} | ${LLM_BACKEND} :${LLM_PORT}"
 
 # Hand off to the container command (default: keep running).
 if [ "$#" -eq 0 ]; then
