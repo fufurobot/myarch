@@ -230,3 +230,4 @@ Dockerfile
 
 .secrets.env
 .scratch/
+.uv-cache/
