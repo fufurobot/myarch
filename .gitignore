@@ -219,3 +219,13 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 uv.lock
+
+.env
+.env.*
+!.env.example
+model.gguf
+Dockerfile
+/out/
+.venv/
+
+.secrets.env
