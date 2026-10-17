@@ -77,7 +77,7 @@ jobs:
         run: uv run pytest -q
 
       - name: Install docker buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build the image (no model, CPU path)
         run: |
