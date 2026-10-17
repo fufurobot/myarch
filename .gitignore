@@ -229,3 +229,8 @@ Dockerfile
 .venv/
 
 .secrets.env
+.scratch/
+.uv-cache/
+.myarch-build/
+.myarch-dry-run.Dockerfile
+.uv-tools/

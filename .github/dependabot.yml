@@ -1,0 +1,40 @@
+version: 2
+updates:
+  # Python dependencies (pyproject.toml / uv.lock)
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    target-branch: "dev"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      python-dev:
+        dependency-type: "development"
+      python-runtime:
+        dependency-type: "production"
+
+  # GitHub Actions used by the workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    target-branch: "dev"
+    commit-message:
+      prefix: "chore(ci)"
+
+  # Base image version tracking for the devcontainer
+  - package-ecosystem: "devcontainers"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    target-branch: "dev"
+    commit-message:
+      prefix: "chore(devcontainer)"
+
+  # Dockerfile.j2 is a template, so Dependabot cannot parse it directly.
+  # The rendered Dockerfile that CI builds is checked by the workflow instead.
