@@ -688,3 +688,36 @@ class TestOfficialRepoPackages:
     def test_aichat_comes_from_the_official_extra_repo(self, base_render):
         """aichat itself IS in extra; only its AUR forks are not."""
         assert re.search(r"pacman -S[^\n]*\baichat\b", base_render)
+
+
+class TestWorkflowConfiguration:
+    """CI wiring invariants, checked as text so no YAML dependency is required.
+
+    Regression: `on.push` listed only `branches`, which excludes tag pushes
+    entirely, so the release job could never be triggered by `git push --tags`.
+    """
+
+    @pytest.fixture(scope="class")
+    def workflow(self) -> str:
+        return Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+
+    def test_tag_pushes_trigger_the_workflow(self, workflow):
+        assert re.search(r"tags:\s*\[[^\]]*v\*", workflow), (
+            "a branches-only push filter excludes tags, making the release job unreachable"
+        )
+
+    def test_release_job_runs_on_tags(self, workflow):
+        assert "startsWith(github.ref, 'refs/tags/v')" in workflow
+
+    def test_full_test_gates_main(self, workflow):
+        assert "github.ref == 'refs/heads/main'" in workflow
+
+    def test_fast_test_handles_every_branch(self, workflow):
+        assert "github.event_name == 'pull_request'" in workflow
+
+    def test_pages_publishes_a_branch(self, workflow):
+        assert "publish_branch: gh-pages" in workflow
+
+    def test_dependabot_targets_dev(self):
+        dependabot = Path(".github/dependabot.yml").read_text(encoding="utf-8")
+        assert 'target-branch: "dev"' in dependabot

@@ -7,6 +7,9 @@ name: test
 on:
   push:
     branches: [dev, main]
+    # Tag pushes are what trigger the release job. Without this the job could
+    # never run, because a `branches` filter excludes tags entirely.
+    tags: ["v*"]
   pull_request:
     branches: [dev, main]
   workflow_dispatch:
