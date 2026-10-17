@@ -195,7 +195,11 @@ jobs:
             '- `Dockerfile.cpu.txt` - CPU/llama.cpp variant of the template output' \
             > ./_site/index.md
 
+      # enablement: true lets the workflow turn Pages on for the repository,
+      # since a fine-grained token without the Pages scope cannot do it by API.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
