@@ -197,7 +197,7 @@ jobs:
 
       # enablement: true lets the workflow turn Pages on for the repository,
       # since a fine-grained token without the Pages scope cannot do it by API.
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
         with:
           enablement: true
 
