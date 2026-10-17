@@ -218,8 +218,10 @@ RUN pacman -Syu --noconfirm \
 # directories via systemd at import time and a build container has no init
 # system, so it fails with "System has not been booted with systemd". Checking
 # the installed files and importing the module proves the same thing.
+# pikaur keeps its version in config.py rather than on the package, so ask
+# pacman for the version and only use the import as a smoke test.
 RUN test -x /usr/bin/pikaur \
- && /usr/bin/python -c "import pikaur; print('pikaur', pikaur.__version__)" \
+ && /usr/bin/python -c "import pikaur.config" \
  && pacman -Q pikaur
 
 {% if gpu_vendor == 'nvidia' %}
