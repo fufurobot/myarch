@@ -147,7 +147,7 @@ jobs:
           (cd dist && sha256sum ./* > SHA256SUMS)
 
       - name: Upload artifacts to the release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.tar.gz
