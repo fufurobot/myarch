@@ -119,7 +119,7 @@ set -a; . ./.secrets.env; set +a
 
 ```bash
 uv sync --group dev
-uv run pytest              # 159 tests
+uv run pytest              # 162 tests
 ```
 
 The suite was written test-first: each module landed as a failing WIP commit

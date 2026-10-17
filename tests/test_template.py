@@ -634,3 +634,29 @@ class TestPacmanDatabase:
     def test_keyring_is_refreshed_before_the_full_upgrade(self, base_render):
         assert "pacman-key --init" in base_render
         assert "pacman -Syu" in base_render
+
+
+class TestNoInitSystemAssumptions:
+    """Build-time checks must not need a running init system.
+
+    Regression: `pikaur --version` initialises directories through systemd and
+    aborted the build with 'System has not been booted with systemd as init
+    system (PID 1)'. The package itself had installed correctly.
+    """
+
+    def test_pikaur_is_not_executed_during_build(self, base_render):
+        code = "\n".join(
+            line for line in base_render.splitlines() if not line.lstrip().startswith("#")
+        )
+        assert "pikaur --version" not in code, "invoking pikaur during build requires systemd"
+
+    def test_pikaur_install_is_verified_instead(self, base_render):
+        assert "import pikaur" in base_render or "pacman -Q pikaur" in base_render
+
+    def test_systemd_is_not_enabled_at_build_time(self, base_render):
+        """Enablement must happen at runtime, not in the image build."""
+        code = "\n".join(
+            line for line in base_render.splitlines() if not line.lstrip().startswith("#")
+        )
+        assert "systemctl enable" not in code
+        assert "systemctl start" not in code

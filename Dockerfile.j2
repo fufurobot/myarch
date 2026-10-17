@@ -213,8 +213,14 @@ RUN pacman -Syu --noconfirm \
  && printf '[sync]\nalwaysshowupgrades = no\n\n[build]\nkeepbuilddir = no\nskipreview = no\n' \
       > /home/pikaur-manager/.config/pikaur.conf \
  && chown -R pikaur-manager:pikaur-manager /home/pikaur-manager \
- && pikaur --version \
  && chage -d 0 pikaur-manager
+# Verify the install without running pikaur: `pikaur --version` initialises its
+# directories via systemd at import time and a build container has no init
+# system, so it fails with "System has not been booted with systemd". Checking
+# the installed files and importing the module proves the same thing.
+RUN test -x /usr/bin/pikaur \
+ && /usr/bin/python -c "import pikaur; print('pikaur', pikaur.__version__)" \
+ && pacman -Q pikaur
 
 {% if gpu_vendor == 'nvidia' %}
 # =============================================================================
