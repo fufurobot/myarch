@@ -90,7 +90,11 @@ RUN pacman-key --init \
  && sed -i 's/^#\(en_US\.UTF-8\)/\1/' /etc/locale.gen \
  && locale-gen \
  && echo "LANG=en_US.UTF-8" > /etc/locale.conf \
- && rm -rf /var/cache/pacman/pkg/* /var/lib/pacman/sync/*
+ && rm -rf /var/cache/pacman/pkg/*
+# Only the downloaded archives are cleaned. /var/lib/pacman/sync is deliberately
+# kept: deleting it leaves pacman with no targets, and every later `pacman -S`
+# then fails with "target not found" no matter how correct the package names
+# are. Sync explicitly in each layer that installs packages.
 
 # =============================================================================
 # 1b. Users and groups with least-privilege sudo
@@ -190,7 +194,8 @@ RUN ssh-keygen -A \
 # dependencies are installed here as root and makepkg runs with --nodeps. The
 # list mirrors makedepends in the AUR PKGBUILD; python-markdown-it-py in
 # particular is required by pikaur's man-page generator.
-RUN pacman -S --noconfirm --needed \
+RUN pacman -Syu --noconfirm \
+ && pacman -S --noconfirm --needed \
       python-wheel \
       python-hatchling \
       python-build \
@@ -201,7 +206,8 @@ RUN chown -R pikaur-manager:pikaur-manager /home/pikaur-manager \
  && runuser -u pikaur-manager -- git clone --depth 1 https://aur.archlinux.org/pikaur.git /home/pikaur-manager/pikaur \
  && chown -R pikaur-manager:pikaur-manager /home/pikaur-manager/pikaur \
  && runuser -u pikaur-manager -- bash -lc 'cd /home/pikaur-manager/pikaur && makepkg -fs --noconfirm --nodeps'
-RUN pacman -U --noconfirm /home/pikaur-manager/pikaur/*.pkg.tar.* \
+RUN pacman -Syu --noconfirm \
+ && pacman -U --noconfirm /home/pikaur-manager/pikaur/*.pkg.tar.* \
  && pacman -S --noconfirm --needed pyalpm \
  && mkdir -p /home/pikaur-manager/.config \
  && printf '[sync]\nalwaysshowupgrades = no\n\n[build]\nkeepbuilddir = no\nskipreview = no\n' \
@@ -218,10 +224,12 @@ RUN pacman -U --noconfirm /home/pikaur-manager/pikaur/*.pkg.tar.* \
 {% if gpu_needs_aur_fallback %}
 # Driver {{ gpu_driver_version }} is older than anything Arch ships, so the
 # matching legacy module is resolved through pikaur (AUR).
-RUN pacman -S --noconfirm --needed nvidia-utils \
+RUN pacman -Syu --noconfirm \
+ && pacman -S --noconfirm --needed nvidia-utils \
  && sudo -u pikaur-manager pikaur -S --noconfirm --noprogressbar {{ gpu_driver_package }}
 {% else %}
-RUN pacman -S --noconfirm --needed \
+RUN pacman -Syu --noconfirm \
+ && pacman -S --noconfirm --needed \
       {{ gpu_driver_package }} \
       nvidia-utils \
       cuda \
@@ -236,7 +244,8 @@ RUN command -v nvidia-smi \
 # 3. AMD driver (templated from host detection)
 # -----------------------------------------------------------------------------
 # Host reported: {{ gpu_name or 'AMD GPU' }}
-RUN pacman -S --noconfirm --needed \
+RUN pacman -Syu --noconfirm \
+ && pacman -S --noconfirm --needed \
       {{ gpu_driver_package }} \
       mesa \
       vulkan-radeon \
@@ -258,7 +267,8 @@ RUN echo "No usable GPU detected on the host; building a CPU-only image."
 # =============================================================================
 # 4. KDE Plasma desktop + VNC server, one 1920x1080 virtual screen
 # =============================================================================
-RUN pacman -S --noconfirm --needed \
+RUN pacman -Syu --noconfirm \
+ && pacman -S --noconfirm --needed \
       plasma-desktop \
       plasma-workspace \
       konsole \
@@ -396,7 +406,8 @@ RUN sudo -u user code-server --install-extension Continue.continue || \
 # -----------------------------------------------------------------------------
 # Research note: aichat ships in the official `extra` repository (0.30.0-4);
 # it is NOT an AUR package, so pacman is the correct installer.
-RUN pacman -S --noconfirm --needed aichat \
+RUN pacman -Syu --noconfirm \
+ && pacman -S --noconfirm --needed aichat \
  && rm -rf /var/cache/pacman/pkg/* \
  && mkdir -p /home/user/.config/aichat \
  && printf '%s\n' \

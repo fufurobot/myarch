@@ -602,3 +602,35 @@ class TestPikaurBuildDependencies:
         """-s would need root, which the pikaur-manager rule does not grant."""
         assert "makepkg -fs --noconfirm --nodeps" in base_render
         assert "makepkg -fsi" not in base_render
+
+
+class TestPacmanDatabase:
+    """The pacman sync database must survive and be refreshed before installing.
+
+    Regression: the base layer deleted /var/lib/pacman/sync/*, so every later
+    `pacman -S` failed with "target not found" even though the package names
+    were correct - the database simply had no targets in it.
+    """
+
+    def test_sync_database_is_not_deleted(self, base_render):
+        code = "\n".join(
+            line for line in base_render.splitlines() if not line.lstrip().startswith("#")
+        )
+        assert "/var/lib/pacman/sync" not in code, (
+            "deleting the sync DB leaves pacman unable to resolve any target"
+        )
+
+    def test_every_install_layer_syncs_first(self, base_render):
+        """A `pacman -S` must be preceded by a sync within the same RUN."""
+        instructions = re.findall(r"^RUN .*?(?=^RUN |^COPY |^ENV |^EXPOSE |\Z)", base_render, re.M | re.S)
+        for block in instructions:
+            if "pacman -S " not in block and "pacman -U " not in block:
+                continue
+            assert "pacman -Syu" in block or "pacman -Sy " in block, (
+                "this RUN installs packages without syncing the database first:\n%s"
+                % block.splitlines()[0][:120]
+            )
+
+    def test_keyring_is_refreshed_before_the_full_upgrade(self, base_render):
+        assert "pacman-key --init" in base_render
+        assert "pacman -Syu" in base_render
