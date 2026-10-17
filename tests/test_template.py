@@ -454,7 +454,7 @@ class TestModelAndRuntime:
             expose = re.search(r"^EXPOSE .*$", out, re.MULTILINE)
             assert expose, "Dockerfile must declare EXPOSE"
             ports = expose.group(0).split()[1:]
-            for required in ("22", "5900", "8443", "6080", llm_port):
+            for required in ("22", "5900", "8443", llm_port):
                 assert required in ports, "port %s must be exposed" % required
 
     def test_uses_archlinux_base(self, base_render):
@@ -510,8 +510,14 @@ class TestEntrypointCoverage:
     def test_starts_code_server(self, entry):
         assert "code-server" in entry
 
-    def test_starts_novnc(self, entry):
-        assert "websockify" in entry, "noVNC/6080 is exposed, so websockify must start"
+    def test_does_not_start_services_the_image_lacks(self, entry, base_render):
+        """A runtime service must correspond to something actually installed."""
+        code = "\n".join(
+            line for line in entry.splitlines() if not line.lstrip().startswith("#")
+        )
+        for binary in ("websockify",):
+            if binary in code:
+                assert binary in base_render, "%s is started but never installed" % binary
 
     def test_starts_the_model_server(self, entry):
         assert "llama-server" in entry
@@ -660,3 +666,25 @@ class TestNoInitSystemAssumptions:
         )
         assert "systemctl enable" not in code
         assert "systemctl start" not in code
+
+
+class TestOfficialRepoPackages:
+    """Privileged layers may only install packages from official Arch repos.
+
+    Regression: the KDE layer requested novnc and websockify, which are AUR-only,
+    so pacman failed with "target not found". Pulling AUR packages into a root
+    layer would also mean building untrusted recipes as root.
+    """
+
+    # Verified against archlinux.org/packages for the official repositories.
+    AUR_ONLY = ("novnc", "websockify", "code-server", "aichat-git", "aichat-ng")
+
+    @pytest.mark.parametrize("package", AUR_ONLY)
+    def test_aur_only_package_is_not_installed_with_pacman(self, base_render, package):
+        assert not re.search(
+            r"pacman -S[^\n]*\b%s\b" % re.escape(package), base_render
+        ), "%s is AUR-only and cannot be installed by pacman" % package
+
+    def test_aichat_comes_from_the_official_extra_repo(self, base_render):
+        """aichat itself IS in extra; only its AUR forks are not."""
+        assert re.search(r"pacman -S[^\n]*\baichat\b", base_render)

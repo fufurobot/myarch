@@ -16,7 +16,6 @@ all from one Jinja2 template rendered by host detection.
 | VNC desktop | 5900 | KDE Plasma, exactly one 1920x1080 virtual screen |
 | code-server | 8443 | Continue extension pre-pointed at the local model |
 | Model server | 8080 (llama.cpp) / 8081 (vLLM) | OpenAI-compatible `/v1` |
-| noVNC web desktop | 6080 | browser access to the same single screen |
 
 ## Requirements
 
@@ -119,7 +118,7 @@ set -a; . ./.secrets.env; set +a
 
 ```bash
 uv sync --group dev
-uv run pytest              # 162 tests
+uv run pytest              # 168 tests
 ```
 
 The suite was written test-first: each module landed as a failing WIP commit

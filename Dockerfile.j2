@@ -290,8 +290,6 @@ RUN pacman -Syu --noconfirm \
       dbus \
       ttf-dejavu \
       tigervnc \
-      novnc \
-      websockify \
  && rm -rf /var/cache/pacman/pkg/*
 
 # Exactly one virtual screen at {{ vnc_resolution }}, running KDE Plasma.
@@ -463,7 +461,7 @@ COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh \
  && bash -n /usr/local/bin/entrypoint.sh
 
-EXPOSE 22 {{ 5900 }} {{ code_server_port }} {{ llm_port }} 6080
+EXPOSE 22 {{ 5900 }} {{ code_server_port }} {{ llm_port }}
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
     CMD curl -fsS http://127.0.0.1:{{ llm_port }}/v1/models || exit 1
